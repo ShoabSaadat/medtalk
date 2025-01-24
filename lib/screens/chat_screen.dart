@@ -35,10 +35,12 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _handleVoiceInput() {
-    setState(() {
-      _isListening = !_isListening;
-      // TODO: Implement speech-to-text functionality
-    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Voice input coming soon!'),
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   void _scrollToBottom() {
