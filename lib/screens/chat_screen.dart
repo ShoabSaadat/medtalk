@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:medtalk/models/chat_message.dart';
+import 'package:medtalk/services/gemini_service.dart';
 import 'package:medtalk/widgets/chat_input.dart';
 import 'package:medtalk/widgets/chat_message_bubble.dart';
 
@@ -15,7 +17,9 @@ class _ChatScreenState extends State<ChatScreen> {
   final ScrollController _scrollController = ScrollController();
   bool _isListening = false;
 
-  void _handleSendMessage(String text) {
+  Future<void> _handleSendMessage(String text) async {
+    if (text.trim().isEmpty) return;
+
     setState(() {
       _messages.add(
         ChatMessage(
@@ -23,15 +27,36 @@ class _ChatScreenState extends State<ChatScreen> {
           role: MessageRole.user,
         ),
       );
-      // TODO: Implement Gemini API call here
-      _messages.add(
-        ChatMessage(
-          content: 'This is a placeholder response. Gemini API will be integrated soon.',
-          role: MessageRole.assistant,
-        ),
-      );
     });
     _scrollToBottom();
+
+    try {
+      // Get message history except the last message
+      final history = _messages.length > 1 
+          ? _messages.sublist(0, _messages.length - 1)
+          : <ChatMessage>[];
+
+      final response = await GeminiService().chat(text, history);
+      
+      setState(() {
+        _messages.add(
+          ChatMessage(
+            content: response,
+            role: MessageRole.assistant,
+          ),
+        );
+      });
+      _scrollToBottom();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   void _handleVoiceInput() {
