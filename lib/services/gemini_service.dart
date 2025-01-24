@@ -19,7 +19,11 @@ class GeminiService {
     );
   }
 
-  Future<String> chat(String message, List<ChatMessage> history) async {
+  Future<String> chat(
+    String message,
+    List<ChatMessage> history, {
+    List<int>? audioData,
+  }) async {
     developer.log('Starting chat request with message: $message');
     try {
       developer.log('Converting history to Gemini format');

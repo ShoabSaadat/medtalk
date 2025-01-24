@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:medtalk/models/chat_message.dart';
 import 'package:medtalk/services/gemini_service.dart';
+import 'package:medtalk/services/voice_service.dart';
 import 'package:medtalk/widgets/chat_input.dart';
 import 'package:medtalk/widgets/chat_message_bubble.dart';
 
@@ -15,8 +17,19 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final List<ChatMessage> _messages = [];
   final ScrollController _scrollController = ScrollController();
+  final VoiceService _voiceService = VoiceService();
   bool _isListening = false;
   bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeVoiceService();
+  }
+
+  Future<void> _initializeVoiceService() async {
+    await _voiceService.initialize();
+  }
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -77,18 +90,62 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _handleVoiceInput() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Voice input coming soon!'),
-        duration: Duration(seconds: 2),
-      ),
-    );
+  Future<void> _handleVoiceInput() async {
+    if (_isListening) {
+      // Stop listening
+      setState(() => _isListening = false);
+      await _voiceService.stopListening();
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      // Start speech recognition
+      setState(() => _isListening = true);
+      final text = await _voiceService.startListening();
+      setState(() => _isListening = false);
+      
+      if (text == null || text.isEmpty) {
+        throw Exception('No speech detected. Please try again.');
+      }
+
+      // Send transcribed text to Gemini
+      final response = await GeminiService().chat(text, []);
+      
+      setState(() {
+        _messages.add(
+          ChatMessage(
+            content: "🎤 $text",
+            role: MessageRole.user,
+          ),
+        );
+        _messages.add(
+          ChatMessage(
+            content: response,
+            role: MessageRole.assistant,
+          ),
+        );
+      });
+      _scrollToBottom();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.toString().replaceAll('Exception: ', '')),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } finally {
+      setState(() => _isLoading = false);
+    }
   }
 
   @override
   void dispose() {
     _scrollController.dispose();
+    _voiceService.dispose();
     super.dispose();
   }
 
