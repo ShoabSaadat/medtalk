@@ -1,0 +1,247 @@
+ Multimodal Live API - Quickstart
+Run in Google Colab
+This notebook demonstrates simple usage of the Gemini 2.0 Multimodal Live API. For an overview of new capabilities refer to the Gemini 2.0 docs.
+
+This notebook implements a simple turn-based chat where you send messages as text, and the model replies with audio. The API is capable of much more than that. The goal here is to demonstrate with simple code.
+
+If you aren't looking for code, and just want to try multimedia streaming use Live API in Google AI Studio.
+
+The Next steps section at the end of this tutorial provides links to additional resources.
+
+Setup
+Install SDK
+The new Google Gen AI SDK provides programmatic access to Gemini 2.0 (and previous models) using both the Google AI for Developers and Vertex AI APIs. With a few exceptions, code that runs on one platform will run on both.
+
+More details about this new SDK on the documentation or in the Getting started notebook.
+
+!pip install -U -q google-genai
+
+Set up your API key
+To run the following cell, your API key must be stored in a Colab Secret named GOOGLE_API_KEY. If you don't already have an API key, or you're not sure how to create a Colab Secret, see Authentication for an example.
+
+from google.colab import userdata
+import os
+
+os.environ['GOOGLE_API_KEY'] = userdata.get('GOOGLE_API_KEY')
+
+Initialize SDK client
+The client will pick up your API key from the environment variable. To use the live API you need to set the client version to v1alpha.
+
+from google import genai
+client = genai.Client(http_options= {'api_version': 'v1alpha'})
+
+elect a model
+Multimodal Live API are a new capability introduced with the Gemini 2.0 model. It won't work with previous generation models.
+
+MODEL = "gemini-2.0-flash-exp"
+
+Import
+Import all the necessary modules.
+
+import asyncio
+import base64
+import contextlib
+import datetime
+import os
+import json
+import wave
+import itertools
+
+from IPython.display import display, Audio
+
+from google import genai
+from google.genai import types
+
+async def async_enumerate(it):
+  n = 0
+  async for item in it:
+    yield n, item
+    n +=1
+
+
+Text to Text
+The simplest way to use the Live API is as a text-to-text chat interface, but it can do a lot more than this.
+
+config={
+    "generation_config": {"response_modalities": ["TEXT"]}}
+
+async with client.aio.live.connect(model=MODEL, config=config) as session:
+  message = "Hello? Gemini are you there?"
+  print("> ", message, "\n")
+  await session.send(input=message, end_of_turn=True)
+
+  # For text responses, When the model's turn is complete it breaks out of the loop.
+  turn = session.receive()
+  async for chunk in turn:
+    if chunk.text is not None:
+      print(f'- {chunk.text}')
+
+
+Simple text to audio
+The simplest way to playback the audio in Colab, is to write it out to a .wav file. So here is a simple wave file writer:
+
+@contextlib.contextmanager
+def wave_file(filename, channels=1, rate=24000, sample_width=2):
+    with wave.open(filename, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(rate)
+        yield wf
+
+The next step is to tell the model to return audio by setting "response_modalities": ["AUDIO"] in the GenerationConfig.
+
+When you get a response from the model, then you write out the data to a .wav file.
+
+
+config={
+    "generation_config": {"response_modalities": ["AUDIO"]}}
+
+
+
+async with client.aio.live.connect(model=MODEL, config=config) as session:
+  file_name = 'audio.wav'
+  with wave_file(file_name) as wav:
+    message = "Hello? Gemini are you there?"
+    print("> ", message, "\n")
+    await session.send(input=message, end_of_turn=True)
+
+    turn = session.receive()
+    async for n,response in async_enumerate(turn):
+      if response.data is not None:
+        wav.writeframes(response.data)
+
+        if n==0:
+          print(response.server_content.model_turn.parts[0].inline_data.mime_type)
+        print('.', end='')
+
+
+display(Audio(file_name, autoplay=True))
+
+
+Towards Async Tasks
+The real power of the Live API is that it's real time, and interruptable. You can't get that full power in a simple sequence of steps. To really use the functionality you will move the send and recieve operations (and others) into their own async tasks.
+
+Because of the limitations of Colab this tutorial doesn't totally implement the interactive async tasks, but it does implement the next step in that direction:
+
+It separates the send and receive, but still runs them sequentially.
+In the next tutorial you'll run these in separate async tasks.
+Setup a quick logger to make debugging easier (switch to setLevel('DEBUG') to see debugging messages).
+
+import logging
+
+logger = logging.getLogger('Live')
+logger.setLevel('INFO')
+
+The class below implements the interaction with the Live API.
+
+class AudioLoop:
+  def __init__(self, turns=None,  config=None):
+    self.session = None
+    self.index = 0
+    self.turns = turns
+    if config is None:
+      config={
+          "generation_config": {
+              "response_modalities": ["AUDIO"]}}
+    self.config = config
+
+  async def run(self):
+    logger.debug('connect')
+    async with client.aio.live.connect(model=MODEL, config=self.config) as session:
+      self.session = session
+
+      async for sent in self.send():
+        # Ideally send and recv would be separate tasks.
+        await self.recv()
+
+  async def _iter(self):
+    if self.turns:
+      for text in self.turns:
+        print("message >", text)
+        yield text
+    else:
+      print("Type 'q' to quit")
+      while True:
+        text = await asyncio.to_thread(input, "message > ")
+
+        # If the input returns 'q' quit.
+        if text.lower() == 'q':
+          break
+
+        yield text
+
+  async def send(self):
+    async for text in self._iter():
+      logger.debug('send')
+
+      # Send the message to the model.
+      await self.session.send(input=text, end_of_turn=True)
+      logger.debug('sent')
+      yield text
+
+  async def recv(self):
+    # Start a new `.wav` file.
+    file_name = f"audio_{self.index}.wav"
+    with wave_file(file_name) as wav:
+      self.index += 1
+
+      logger.debug('receive')
+
+      # Read chunks from the socket.
+      turn = self.session.receive()
+      async for n, response in async_enumerate(turn):
+        logger.debug(f'got chunk: {str(response)}')
+
+        if response.data is None:
+          logger.debug(f'Unhandled server message! - {response}')
+        else:
+          wav.writeframes(response.data)
+          if n == 0:
+            print(response.server_content.model_turn.parts[0].inline_data.mime_type)
+          print('.', end='')
+
+      print('\n<Turn complete>')
+
+    display(Audio(file_name, autoplay=True))
+    await asyncio.sleep(2)
+
+
+There are 3 methods worth describing here:
+
+**`run` - The main loop**
+
+This method:
+
+- Opens a `websocket` connecting to the Live API.
+- Calls the initial `setup` method.
+- Then enters the main loop where it alternates between `send` and `recv` until send returns `False`.
+- The next tutorial will demonstrate how to stream media and run these asynchronously.
+
+**`send` - Sends input text to the api**
+
+The `send` method collects input text from the user, wraps it in a `client_content` message (an instance of `BidiGenerateContentClientContent`), and sends it to the model.
+
+If the user sends a `q` this method returns `False` to signal that it's time to quit.
+
+**`recv` - Collects audio from the API and plays it**
+
+The `recv` method collects audio chunks in a loop and writes them to a `.wav` file. It breaks out of the loop once the model sends a `turn_complete` method, and then plays the audio.
+
+To keep things simple in Colab it collects **all** the audio before playing it. [Other examples](#next_steps) demonstrate how to play audio as soon as you start to receive it (using `PyAudio`), and how to interrupt the model (implement input and audio playback on separate tasks).
+
+### Run
+
+Run it:
+
+await AudioLoop(['Hello', "What's your name?"]).run()
+
+Next steps
+
+This tutorial just shows basic usage of the Live API, using the Python GenAI SDK.
+
+If you aren't looking for code, and just want to try multimedia streaming use Live API in Google AI Studio.
+If you want to see how to setup streaming interruptible audio and video using the Live API see the Audio and Video input Tutorial.
+If you're interested in the low level details of using the websockets directly, see the websocket version of this tutorial.
+Try the Tool use in the live API tutorial for an walkthrough of Gemini-2's new tool use capabilities.
+There is a Streaming audio in Colab example, but this is more of a demo, it's not optimized for readability.
+Other nice Gemini 2.0 examples can also be found in the Cookbook, in particular the video understanding and the spatial understanding ones.
